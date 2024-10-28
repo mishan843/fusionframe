@@ -18,9 +18,9 @@ import { jwtDecode } from 'jwt-decode';
 export default function PrivateRoutes() {
     const authToken = localStorage.getItem('token');
 
-    if (!authToken) {
-        return <Navigate to="/login" />;
-    }
+    // if (!authToken) {
+    //     return <Navigate to="/login" />;
+    // }
 
     // Function to check if token is expired
     const isTokenExpired = (token) => {
@@ -33,10 +33,10 @@ export default function PrivateRoutes() {
         }
     };
 
-    if (isTokenExpired(authToken)) {
-        localStorage.removeItem('authToken'); // Remove expired token
-        return <Navigate to="/login" />;
-    }
+    // if (isTokenExpired(authToken)) {
+    //     localStorage.removeItem('authToken'); // Remove expired token
+    //     return <Navigate to="/login" />;
+    // }
 
     return <Outlet />;
 }
