@@ -1,0 +1,53 @@
+.inputBtn {
+    height: 50px;
+    display: flex;
+    justify-content: end;
+    align-items: center;
+    border-radius: 6px;
+    padding: 10px;
+    border: 0.5px solid #262626;
+}
+
+.allItems {
+    width: 100%;
+    height: 100%;
+    border: 1px solid #BDBDBD;
+    border-radius: 6px;
+}
+
+.gridcontainer {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto auto auto auto;
+}
+
+.addColSpan {
+    grid-column: span 2;
+}
+
+.griditem {
+    background-color: #F2F2F2;
+    margin: 3px;
+    font-size: 18px;
+    padding: 4px;
+    border: none;
+    border-radius: 3px;
+    /* font-size: 30px; */
+    text-align: center;
+}
+
+.griditem:focus  {
+    background-color: #262626;
+    color: #FFFFFF;
+}
+
+@media only screen and (max-width: 425px) {
+    .griditem {
+        font-size: 20px;
+        margin: 3px;
+    }
+
+    .inputBtn {
+        height: 40px;
+    }
+}
