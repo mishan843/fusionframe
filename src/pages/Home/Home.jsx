@@ -26,7 +26,8 @@ import {
 } from '@mui/material';
 import {
   Upload,
-  Image as ImageIcon,
+  Image as ImageLucide,  // Renamed to avoid conflict
+  Image as ImageIcon,    // Keep this if you're using it
   Wand2,
   Sparkles,
   Menu as MenuIcon,
@@ -35,7 +36,6 @@ import {
   Settings,
   User,
   LogOut,
-  Image,
   PaintBucket,
   ChevronLeft,
   Download,
@@ -370,8 +370,7 @@ const ImagePreviewBox = styled(Box)({
 // Remove the top-level useCallback and move the optimizeImage helper function outside
 const optimizeImage = (file) => {
   return new Promise((resolve) => {
-    const img = document.createElement('img'); // Use this instead of new Image()
-    
+    const img = new window.Image(); // Use window.Image instead of Image
     img.onload = () => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -393,25 +392,36 @@ const optimizeImage = (file) => {
         resolve(URL.createObjectURL(blob));
       }, 'image/jpeg', 0.8);
     };
-    
     img.src = URL.createObjectURL(file);
   });
 };
 
-const CanvasWrapper = styled(Box)({
+const CanvasWrapper = styled(Box)(({ theme }) => ({
   position: 'relative',
   width: '100%',
-  height: '600px',
+  height: '600px', // Adjusted height
   border: '2px dashed rgba(255, 255, 255, 0.2)',
   borderRadius: '8px',
   overflow: 'hidden',
-});
+  touchAction: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  backgroundColor: '#1a1a1a',
+  '& canvas': {
+    maxWidth: '100%',
+    maxHeight: '100%',
+    objectFit: 'contain',
+  }
+}));
 
+// Add BrushControls component
 const BrushControls = memo(({ brushSize, setBrushSize, isErasing, setIsErasing }) => (
   <Box sx={{ 
     display: 'flex', 
-    gap: 2, 
+    gap: { xs: 1, sm: 2 }, 
     alignItems: 'center',
+    flexWrap: 'wrap'
   }}>
     <Button
       variant={isErasing ? 'outlined' : 'contained'}
@@ -446,21 +456,16 @@ const BrushControls = memo(({ brushSize, setBrushSize, isErasing, setIsErasing }
       Eraser
     </Button>
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-        Size:
-      </Typography>
+      <Typography variant="body2" sx={{ color: 'text.secondary' }}>Size:</Typography>
       <Slider
         value={brushSize}
         onChange={(_, value) => setBrushSize(value)}
         min={1}
         max={50}
         sx={{ 
-          width: 100,
-          '& .MuiSlider-thumb': {
-            backgroundColor: isErasing ? '#6366f1' : '#ef4444',
-          },
-          '& .MuiSlider-track': {
-            backgroundColor: isErasing ? '#6366f1' : '#ef4444',
+          width: { xs: '100%', sm: 100 },
+          '& .MuiSlider-thumb, & .MuiSlider-track': {
+            borderRadius: '4px',
           },
         }}
       />
@@ -475,138 +480,119 @@ const PreviewSection = memo(({ previewUrl, isLoading, onMaskChange }) => {
   const [brushSize, setBrushSize] = useState(10);
   const [isErasing, setIsErasing] = useState(false);
   const imageRef = useRef(null);
+  const brushLayerRef = useRef(null); // Separate canvas for brush strokes
 
   useEffect(() => {
-    if (!previewUrl) return;
+    if (!previewUrl || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
-    const img = document.createElement('img');
+    const img = new Image();
 
     img.onload = () => {
-      const containerWidth = canvas.parentElement.clientWidth;
-      const containerHeight = canvas.parentElement.clientHeight;
-      const scale = Math.min(
-        containerWidth / img.width,
-        containerHeight / img.height
-      );
-      
-      canvas.width = img.width * scale;
-      canvas.height = img.height * scale;
-
-      // Store the original image
+      // Set dimensions
+      canvas.width = img.width;
+      canvas.height = img.height;
       imageRef.current = img;
 
-      // Initial draw
-      context.drawImage(img, 0, 0, canvas.width, canvas.height);
+      // Create brush layer canvas
+      const brushLayer = document.createElement('canvas');
+      brushLayer.width = img.width;
+      brushLayer.height = img.height;
+      brushLayerRef.current = brushLayer;
       
-      // Set up context
-      context.lineCap = 'round';
-      context.lineJoin = 'round';
-      context.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
-      context.lineWidth = brushSize;
-      contextRef.current = context;
+      // Setup brush context
+      const brushContext = brushLayer.getContext('2d');
+      brushContext.lineCap = 'round';
+      brushContext.lineJoin = 'round';
+      brushContext.strokeStyle = 'rgba(99, 102, 241, 0.3)';
+      brushContext.lineWidth = brushSize;
+      contextRef.current = brushContext;
+
+      // Draw initial image
+      context.drawImage(img, 0, 0);
+      updateCanvas();
     };
 
     img.src = previewUrl;
-  }, [previewUrl]);
+  }, [previewUrl, brushSize]);
 
-  useEffect(() => {
-    if (contextRef.current) {
-      contextRef.current.lineWidth = brushSize;
-      if (!isErasing) {
-        contextRef.current.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
-      }
-    }
-  }, [brushSize, isErasing]);
+  const updateCanvas = useCallback(() => {
+    if (!canvasRef.current || !imageRef.current || !brushLayerRef.current) return;
 
-  const redrawCanvas = () => {
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
+
+    // Clear main canvas
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
-  };
-
-  const startDrawing = ({ nativeEvent }) => {
-    const { offsetX, offsetY } = nativeEvent;
-    const context = contextRef.current;
-
-    if (isErasing) {
-      // For eraser, redraw the original image at the current position
-      redrawCanvas();
-    } else {
-      context.beginPath();
-      context.moveTo(offsetX, offsetY);
-      context.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
-    }
-    setIsDrawing(true);
-  };
-
-  const draw = ({ nativeEvent }) => {
-    if (!isDrawing) return;
-
-    const { offsetX, offsetY } = nativeEvent;
-    const context = contextRef.current;
-
-    if (isErasing) {
-      // Create a circular eraser
-      context.save();
-      context.beginPath();
-      context.arc(offsetX, offsetY, brushSize / 2, 0, Math.PI * 2, true);
-      context.clip();
-      context.clearRect(offsetX - brushSize, offsetY - brushSize, brushSize * 2, brushSize * 2);
-      context.drawImage(imageRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      context.restore();
-    } else {
-      context.lineTo(offsetX, offsetY);
-      context.stroke();
-    }
-  };
-
-  const stopDrawing = () => {
-    if (!isErasing) {
-      contextRef.current.closePath();
-    }
-    setIsDrawing(false);
     
-    // Get the mask data
-    const maskData = canvasRef.current.toDataURL('image/png');
-    onMaskChange?.(maskData);
-  };
+    // Draw original image
+    context.drawImage(imageRef.current, 0, 0);
+    
+    // Draw brush strokes on top
+    context.drawImage(brushLayerRef.current, 0, 0);
+  }, []);
+
+  const startDrawing = useCallback(({ nativeEvent }) => {
+    const { offsetX, offsetY } = nativeEvent;
+    if (!contextRef.current) return;
+
+    setIsDrawing(true);
+    const context = contextRef.current;
+    
+    context.beginPath();
+    context.moveTo(offsetX, offsetY);
+  }, []);
+
+  const draw = useCallback(({ nativeEvent }) => {
+    if (!isDrawing || !contextRef.current) return;
+
+    const { offsetX, offsetY } = nativeEvent;
+    const context = contextRef.current;
+
+    if (isErasing) {
+      // Erase brush strokes only
+      context.globalCompositeOperation = 'destination-out';
+    } else {
+      // Draw brush strokes
+      context.globalCompositeOperation = 'source-over';
+      context.strokeStyle = 'rgba(99, 102, 241, 0.3)';
+    }
+
+    context.lineTo(offsetX, offsetY);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(offsetX, offsetY);
+
+    updateCanvas();
+  }, [isDrawing, isErasing, updateCanvas]);
+
+  const stopDrawing = useCallback(() => {
+    if (!contextRef.current) return;
+    
+    setIsDrawing(false);
+    contextRef.current.beginPath();
+    
+    if (brushLayerRef.current) {
+      const maskData = brushLayerRef.current.toDataURL('image/png');
+      onMaskChange?.(maskData);
+    }
+  }, [onMaskChange]);
 
   const clearCanvas = useCallback(() => {
-    if (!canvasRef.current || !imageRef.current) return;
-
-    const canvas = canvasRef.current;
-    const context = canvas.getContext('2d');
+    if (!brushLayerRef.current || !contextRef.current) return;
     
-    // Clear and redraw original image
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
+    // Clear only the brush layer
+    const context = contextRef.current;
+    context.clearRect(0, 0, brushLayerRef.current.width, brushLayerRef.current.height);
     
     // Reset context properties
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
-    context.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
-    context.lineWidth = brushSize;
+    context.globalCompositeOperation = 'source-over';
+    context.strokeStyle = 'rgba(99, 102, 241, 0.3)';
     
-    // Update mask data
+    updateCanvas();
     onMaskChange?.(null);
-  }, [brushSize, onMaskChange]);
-
-  if (isLoading) {
-    return (
-      <Box sx={{ 
-        display: 'flex', 
-        flexDirection: 'column', 
-        alignItems: 'center',
-        gap: 2
-      }}>
-        <CircularProgress size={40} sx={{ color: '#8B5CF6' }} />
-        <Typography>Processing image...</Typography>
-      </Box>
-    );
-  }
+  }, [updateCanvas, onMaskChange]);
 
   return (
     <>
@@ -645,8 +631,14 @@ const PreviewSection = memo(({ previewUrl, isLoading, onMaskChange }) => {
           onMouseMove={draw}
           onMouseUp={stopDrawing}
           onMouseLeave={stopDrawing}
+          onTouchStart={startDrawing}
+          onTouchMove={draw}
+          onTouchEnd={stopDrawing}
           style={{
             cursor: isErasing ? 'cell' : 'crosshair',
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
           }}
         />
       </CanvasWrapper>
@@ -655,18 +647,18 @@ const PreviewSection = memo(({ previewUrl, isLoading, onMaskChange }) => {
 });
 
 const StyleTransferApp = () => {
-  // State declarations
-  const [selectedStyle, setSelectedStyle] = useState(0);
+  // Add these state declarations at the top of your main component
   const [selectedImage, setSelectedImage] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [maskData, setMaskData] = useState(null);
   const [modelType, setModelType] = useState('standard');
+  const [selectedStyle, setSelectedStyle] = useState(0);
+  const [styledResult, setStyledResult] = useState(null);
+  const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuAnchor, setUserMenuAnchor] = useState(null);
-  const [isSidebarOpen, setSidebarOpen] = useState(false);
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const [styledResult, setStyledResult] = useState(null);
-  const [maskData, setMaskData] = useState(null);
 
   // Update toggleSidebar function
   const toggleSidebar = useCallback(() => {
@@ -700,13 +692,15 @@ const StyleTransferApp = () => {
 
     setIsLoading(true);
     try {
-      const optimizedImageUrl = await optimizeImage(file);
-      setSelectedImage(file);
-      setPreviewUrl(optimizedImageUrl);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(file);
+        setPreviewUrl(reader.result);
+        setIsLoading(false);
+      };
+      reader.readAsDataURL(file);
     } catch (error) {
-      console.error('Error processing image:', error);
-      // Optionally show an error message to the user
-    } finally {
+      console.error('Error uploading image:', error);
       setIsLoading(false);
     }
   }, []);
@@ -714,7 +708,7 @@ const StyleTransferApp = () => {
   // 4. Memoize static content
   const menuItems = useMemo(() => [
     { text: 'Home', icon: <Home size={20} /> },
-    { text: 'Gallery', icon: <Image size={20} /> },
+    { text: 'Gallery', icon: <ImageLucide size={20} /> },
     { text: 'My Styles', icon: <PaintBucket size={20} /> },
     { text: 'History', icon: <History size={20} /> },
     { text: 'Settings', icon: <Settings size={20} /> },
@@ -843,23 +837,26 @@ const StyleTransferApp = () => {
     </Drawer>
   ));
 
-  const handleMaskChange = useCallback((newMaskData) => {
-    setMaskData(newMaskData);
-  }, []);
+  // 7. Add loading optimization
+  const deferredIsLoading = useDeferredValue(isLoading);
+
+  // 8. Add transition optimization
+  const [isTransitioning, startTransition] = useTransition();
 
   const handleGenerate = useCallback(async () => {
     if (!selectedImage) return;
 
     setIsLoading(true);
+    startTransition(() => {
+      setStyledResult(null);
+    });
+
     try {
       // Create form data
       const formData = new FormData();
       formData.append('image', selectedImage);
       formData.append('style', selectedStyle);
       formData.append('quality', modelType);
-      if (maskData) {
-        formData.append('mask', maskData);
-      }
 
       // Make API call
       const response = await fetch('YOUR_API_ENDPOINT', {
@@ -870,17 +867,22 @@ const StyleTransferApp = () => {
       const data = await response.json();
       
       if (data.success) {
-        setStyledResult(data.imageUrl);
+        setStyledResult(data.imageUrl); // Set the styled image URL from API response
       } else {
         throw new Error(data.message || 'Failed to process image');
       }
     } catch (error) {
       console.error('Error generating styled image:', error);
-      // Show error message to user
+      // You might want to show an error message to the user
     } finally {
       setIsLoading(false);
     }
-  }, [selectedImage, selectedStyle, modelType, maskData]);
+  }, [selectedImage]);
+
+  // Add this function to handle mask changes
+  const handleMaskChange = useCallback((newMaskData) => {
+    setMaskData(newMaskData);
+  }, []);
 
   return (
     <ThemeProvider theme={theme}>
@@ -1220,7 +1222,7 @@ const StyleTransferApp = () => {
 
               {/* Right Column - Preview */}
               <Grid item xs={12} lg={6}>
-                <StyledCard sx={{ height: '100%', minHeight: '650px' }}> {/* Added minHeight */}
+                <StyledCard sx={{ height: '100%' }}> 
                   <Box p={3}>
                     <Typography variant="h6" mb={2}>
                       Preview
@@ -1231,7 +1233,7 @@ const StyleTransferApp = () => {
                       onMaskChange={handleMaskChange}
                     />
                   </Box>
-                  {styledResult && (
+                  {previewUrl && (
                     <Box sx={{ 
                       mt: 3, 
                       display: 'flex', 
@@ -1241,7 +1243,7 @@ const StyleTransferApp = () => {
                       <Button
                         variant="outlined"
                         startIcon={<Download />}
-                        onClick={() => window.open(styledResult, '_blank')}
+                        onClick={() => window.open(previewUrl, '_blank')}
                         sx={{
                           color: '#fff',
                           borderColor: 'rgba(255, 255, 255, 0.2)',
@@ -1256,7 +1258,7 @@ const StyleTransferApp = () => {
                       <Button
                         variant="outlined"
                         startIcon={<RefreshCw />}
-                        onClick={() => setStyledResult(null)}
+                        onClick={() => setPreviewUrl(null)}
                         sx={{
                           color: '#fff',
                           borderColor: 'rgba(255, 255, 255, 0.2)',
