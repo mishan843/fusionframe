@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo, memo, useDeferredValue, useTransition, lazy, Suspense, useRef, useEffect } from 'react';
 import {
   Box,
   Container,
@@ -22,6 +22,7 @@ import {
   ListItemText,
   useMediaQuery,
   CircularProgress,
+  Slider,
 } from '@mui/material';
 import {
   Upload,
@@ -39,6 +40,7 @@ import {
   ChevronLeft,
   Download,
   RefreshCw,
+  Eraser,
 } from 'lucide-react';
 
 // First, add these Google Fonts to your index.html
@@ -131,8 +133,8 @@ const theme = createTheme({
   },
 });
 
-// Styled components
-const UploadArea = styled(Box)(({ theme }) => ({
+// 1. Memoize styled components that don't need theme access
+const UploadArea = memo(styled(Box)(({ theme }) => ({
   border: '2px dashed rgba(139, 92, 246, 0.5)',
   borderRadius: '12px',
   padding: theme.spacing(4),
@@ -152,7 +154,7 @@ const UploadArea = styled(Box)(({ theme }) => ({
     minHeight: '250px',
     padding: theme.spacing(2),
   },
-}));
+})));
 
 const StyledPaper = styled(Paper)(({ theme }) => ({
   padding: theme.spacing(3),
@@ -365,8 +367,295 @@ const ImagePreviewBox = styled(Box)({
   }
 });
 
+// Remove the top-level useCallback and move the optimizeImage helper function outside
+const optimizeImage = (file) => {
+  return new Promise((resolve) => {
+    const img = document.createElement('img'); // Use this instead of new Image()
+    
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const maxWidth = 1200;
+      
+      let width = img.width;
+      let height = img.height;
+      
+      if (width > maxWidth) {
+        height = (maxWidth * height) / width;
+        width = maxWidth;
+      }
+      
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
+      
+      canvas.toBlob((blob) => {
+        resolve(URL.createObjectURL(blob));
+      }, 'image/jpeg', 0.8);
+    };
+    
+    img.src = URL.createObjectURL(file);
+  });
+};
+
+const CanvasWrapper = styled(Box)({
+  position: 'relative',
+  width: '100%',
+  height: '600px',
+  border: '2px dashed rgba(255, 255, 255, 0.2)',
+  borderRadius: '8px',
+  overflow: 'hidden',
+});
+
+const BrushControls = memo(({ brushSize, setBrushSize, isErasing, setIsErasing }) => (
+  <Box sx={{ 
+    display: 'flex', 
+    gap: 2, 
+    alignItems: 'center',
+  }}>
+    <Button
+      variant={isErasing ? 'outlined' : 'contained'}
+      onClick={() => setIsErasing(false)}
+      startIcon={<PaintBucket size={20} />}
+      sx={{
+        backgroundColor: isErasing ? 'transparent' : 'rgba(239, 68, 68, 0.9)',
+        borderColor: 'rgba(239, 68, 68, 0.5)',
+        color: isErasing ? 'rgba(239, 68, 68, 0.9)' : '#fff',
+        '&:hover': {
+          backgroundColor: isErasing ? 'rgba(239, 68, 68, 0.08)' : 'rgba(239, 68, 68, 0.8)',
+          borderColor: 'rgba(239, 68, 68, 0.8)',
+        },
+      }}
+    >
+      Brush
+    </Button>
+    <Button
+      variant={isErasing ? 'contained' : 'outlined'}
+      onClick={() => setIsErasing(true)}
+      startIcon={<Eraser size={20} />}
+      sx={{
+        backgroundColor: isErasing ? 'rgba(99, 102, 241, 0.9)' : 'transparent',
+        borderColor: 'rgba(99, 102, 241, 0.5)',
+        color: isErasing ? '#fff' : 'rgba(99, 102, 241, 0.9)',
+        '&:hover': {
+          backgroundColor: isErasing ? 'rgba(99, 102, 241, 0.8)' : 'rgba(99, 102, 241, 0.08)',
+          borderColor: 'rgba(99, 102, 241, 0.8)',
+        },
+      }}
+    >
+      Eraser
+    </Button>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+        Size:
+      </Typography>
+      <Slider
+        value={brushSize}
+        onChange={(_, value) => setBrushSize(value)}
+        min={1}
+        max={50}
+        sx={{ 
+          width: 100,
+          '& .MuiSlider-thumb': {
+            backgroundColor: isErasing ? '#6366f1' : '#ef4444',
+          },
+          '& .MuiSlider-track': {
+            backgroundColor: isErasing ? '#6366f1' : '#ef4444',
+          },
+        }}
+      />
+    </Box>
+  </Box>
+));
+
+const PreviewSection = memo(({ previewUrl, isLoading, onMaskChange }) => {
+  const canvasRef = useRef(null);
+  const contextRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [brushSize, setBrushSize] = useState(10);
+  const [isErasing, setIsErasing] = useState(false);
+  const imageRef = useRef(null);
+
+  useEffect(() => {
+    if (!previewUrl) return;
+
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+    const img = document.createElement('img');
+
+    img.onload = () => {
+      const containerWidth = canvas.parentElement.clientWidth;
+      const containerHeight = canvas.parentElement.clientHeight;
+      const scale = Math.min(
+        containerWidth / img.width,
+        containerHeight / img.height
+      );
+      
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+
+      // Store the original image
+      imageRef.current = img;
+
+      // Initial draw
+      context.drawImage(img, 0, 0, canvas.width, canvas.height);
+      
+      // Set up context
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      context.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
+      context.lineWidth = brushSize;
+      contextRef.current = context;
+    };
+
+    img.src = previewUrl;
+  }, [previewUrl]);
+
+  useEffect(() => {
+    if (contextRef.current) {
+      contextRef.current.lineWidth = brushSize;
+      if (!isErasing) {
+        contextRef.current.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
+      }
+    }
+  }, [brushSize, isErasing]);
+
+  const redrawCanvas = () => {
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
+  };
+
+  const startDrawing = ({ nativeEvent }) => {
+    const { offsetX, offsetY } = nativeEvent;
+    const context = contextRef.current;
+
+    if (isErasing) {
+      // For eraser, redraw the original image at the current position
+      redrawCanvas();
+    } else {
+      context.beginPath();
+      context.moveTo(offsetX, offsetY);
+      context.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
+    }
+    setIsDrawing(true);
+  };
+
+  const draw = ({ nativeEvent }) => {
+    if (!isDrawing) return;
+
+    const { offsetX, offsetY } = nativeEvent;
+    const context = contextRef.current;
+
+    if (isErasing) {
+      // Create a circular eraser
+      context.save();
+      context.beginPath();
+      context.arc(offsetX, offsetY, brushSize / 2, 0, Math.PI * 2, true);
+      context.clip();
+      context.clearRect(offsetX - brushSize, offsetY - brushSize, brushSize * 2, brushSize * 2);
+      context.drawImage(imageRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
+      context.restore();
+    } else {
+      context.lineTo(offsetX, offsetY);
+      context.stroke();
+    }
+  };
+
+  const stopDrawing = () => {
+    if (!isErasing) {
+      contextRef.current.closePath();
+    }
+    setIsDrawing(false);
+    
+    // Get the mask data
+    const maskData = canvasRef.current.toDataURL('image/png');
+    onMaskChange?.(maskData);
+  };
+
+  const clearCanvas = useCallback(() => {
+    if (!canvasRef.current || !imageRef.current) return;
+
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+    
+    // Clear and redraw original image
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
+    
+    // Reset context properties
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    context.strokeStyle = 'rgba(239, 68, 68, 0.5)'; // 50% opacity red
+    context.lineWidth = brushSize;
+    
+    // Update mask data
+    onMaskChange?.(null);
+  }, [brushSize, onMaskChange]);
+
+  if (isLoading) {
+    return (
+      <Box sx={{ 
+        display: 'flex', 
+        flexDirection: 'column', 
+        alignItems: 'center',
+        gap: 2
+      }}>
+        <CircularProgress size={40} sx={{ color: '#8B5CF6' }} />
+        <Typography>Processing image...</Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <>
+      <Box sx={{ 
+        display: 'flex', 
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        mb: 2 
+      }}>
+        <BrushControls 
+          brushSize={brushSize}
+          setBrushSize={setBrushSize}
+          isErasing={isErasing}
+          setIsErasing={setIsErasing}
+        />
+        <Button
+          variant="outlined"
+          onClick={clearCanvas}
+          startIcon={<RefreshCw size={20} />}
+          sx={{
+            borderColor: 'rgba(255, 255, 255, 0.2)',
+            color: 'text.secondary',
+            '&:hover': {
+              borderColor: '#ef4444',
+              backgroundColor: 'rgba(239, 68, 68, 0.08)',
+            },
+          }}
+        >
+          Clear All
+        </Button>
+      </Box>
+      <CanvasWrapper>
+        <canvas
+          ref={canvasRef}
+          onMouseDown={startDrawing}
+          onMouseMove={draw}
+          onMouseUp={stopDrawing}
+          onMouseLeave={stopDrawing}
+          style={{
+            cursor: isErasing ? 'cell' : 'crosshair',
+          }}
+        />
+      </CanvasWrapper>
+    </>
+  );
+});
+
 const StyleTransferApp = () => {
-  // Make sure these state declarations are at the very top of your component
+  // State declarations
   const [selectedStyle, setSelectedStyle] = useState(0);
   const [selectedImage, setSelectedImage] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -374,68 +663,203 @@ const StyleTransferApp = () => {
   const [modelType, setModelType] = useState('standard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuAnchor, setUserMenuAnchor] = useState(null);
-  const [isSidebarOpen, setSidebarOpen] = useState(false);  // Changed to false
+  const [isSidebarOpen, setSidebarOpen] = useState(false);
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [styledResult, setStyledResult] = useState(null);
+  const [maskData, setMaskData] = useState(null);
 
-  // Update the toggle function
+  // Update toggleSidebar function
   const toggleSidebar = useCallback(() => {
+    setSidebarOpen(prev => !prev);
     if (isMobile) {
-      setMobileMenuOpen(!mobileMenuOpen);
-    } else {
-      setSidebarOpen(!isSidebarOpen);
+      setMobileMenuOpen(prev => !prev);
     }
-  }, [isMobile, mobileMenuOpen, isSidebarOpen]);
+  }, [isMobile]);
 
-  const menuItems = [
+  // Add handleCloseSidebar function
+  const handleCloseSidebar = useCallback(() => {
+    setSidebarOpen(false);
+    if (isMobile) {
+      setMobileMenuOpen(false);
+    }
+  }, [isMobile]);
+
+  // Add handleDrop function
+  const handleDrop = useCallback((event) => {
+    event.preventDefault();
+    const file = event.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      handleImageUpload({ target: { files: [file] } });
+    }
+  }, []);
+
+  // Move handleImageUpload inside the component
+  const handleImageUpload = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+
+    setIsLoading(true);
+    try {
+      const optimizedImageUrl = await optimizeImage(file);
+      setSelectedImage(file);
+      setPreviewUrl(optimizedImageUrl);
+    } catch (error) {
+      console.error('Error processing image:', error);
+      // Optionally show an error message to the user
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // 4. Memoize static content
+  const menuItems = useMemo(() => [
     { text: 'Home', icon: <Home size={20} /> },
     { text: 'Gallery', icon: <Image size={20} /> },
     { text: 'My Styles', icon: <PaintBucket size={20} /> },
     { text: 'History', icon: <History size={20} /> },
     { text: 'Settings', icon: <Settings size={20} /> },
-  ];
+  ], []);
 
-  const styles = [
+  const styles = useMemo(() => [
     { id: 1, name: 'Noir', thumbnail: 'https://pikaso.cdnpk.net/public/media/modifiers/photo.png?v=2' },
     { id: 2, name: 'Anime', thumbnail: 'https://pikaso.cdnpk.net/public/media/modifiers/photo.png?v=2' },
     { id: 3, name: 'Watercolor', thumbnail: 'https://pikaso.cdnpk.net/public/media/modifiers/photo.png?v=2' },
     { id: 4, name: 'Cyberpunk', thumbnail: 'https://pikaso.cdnpk.net/public/media/modifiers/photo.png?v=2' },
     { id: 5, name: 'Portrait', thumbnail: 'https://pikaso.cdnpk.net/public/media/modifiers/photo.png?v=2' },
-  ];
+  ], []);
 
-  const handleImageUpload = useCallback((event) => {
-    const file = event.target.files[0];
-    if (file && file.type.startsWith('image/')) {
-      setSelectedImage(file);
-      const reader = new FileReader();
-      reader.onloadend = () => setPreviewUrl(reader.result);
-      reader.readAsDataURL(file);
-    }
+  // 5. Split navigation drawer into separate component
+  const NavigationDrawer = memo(({ isOpen, onClose, menuItems }) => (
+    <Drawer
+      variant={isMobile ? 'temporary' : 'persistent'}
+      open={isOpen}
+      onClose={onClose}
+      sx={{
+        flexShrink: 0,
+        '& .MuiDrawer-paper': {
+          width: 240,
+          boxSizing: 'border-box',
+          borderRight: '1px solid rgba(255, 255, 255, 0.08)',
+          transition: 'width 0.3s',
+          background: 'rgba(31, 41, 55, 0.95)',
+          backdropFilter: 'blur(10px)',
+          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+        },
+      }}
+    >
+      <Box sx={{ width: 240, height: '100%', position: 'relative' }}>
+        <SidebarHeader>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Sparkles size={20} style={{ color: '#8B5CF6' }} />
+            <Typography 
+              variant="h6" 
+              sx={{ 
+                fontWeight: 600, 
+                background: 'linear-gradient(45deg, #8B5CF6, #A78BFA)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                fontSize: '1.1rem',
+              }}
+            >
+              FusionFrame
+            </Typography>
+          </Box>
+          <IconButton 
+            onClick={onClose}  // This will now close the sidebar
+            sx={{ 
+              color: 'text.secondary',
+              padding: 0.5,
+              '&:hover': {
+                color: '#8B5CF6',
+                backgroundColor: 'rgba(139, 92, 246, 0.08)',
+              },
+            }}
+          >
+            <ChevronLeft />
+          </IconButton>
+        </SidebarHeader>
+        
+        <List sx={{ px: 1, py: 1 }}>
+          {menuItems.map((item, index) => (
+            <StyledListItem
+              button
+              key={item.text}
+              selected={index === 0}
+              sx={{
+                mb: 0.25,
+                ...(index === 0 && {
+                  background: 'rgba(139, 92, 246, 0.1)',
+                  backdropFilter: 'blur(8px)',
+                  '& .MuiListItemIcon-root': {
+                    color: '#8B5CF6',
+                  },
+                  '& .MuiListItemText-primary': {
+                    color: '#8B5CF6',
+                    fontWeight: 600,
+                  },
+                }),
+              }}
+            >
+              <ListItemIcon>{item.icon}</ListItemIcon>
+              <ListItemText 
+                primary={item.text}
+                sx={{
+                  '& .MuiListItemText-primary': {
+                    fontSize: '0.9rem',
+                  },
+                }} 
+              />
+            </StyledListItem>
+          ))}
+        </List>
+        
+        <Box
+          sx={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            p: 1.5,
+            borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+            background: 'rgba(31, 41, 55, 0.95)',
+          }}
+        >
+          <StyledListItem 
+            button 
+            sx={{ 
+              color: '#ef4444',
+              '&:hover': {
+                backgroundColor: 'rgba(239, 68, 68, 0.08)',
+              },
+            }}
+          >
+            <ListItemIcon>
+              <LogOut size={20} color="currentColor" />
+            </ListItemIcon>
+            <ListItemText primary="Logout" />
+          </StyledListItem>
+        </Box>
+      </Box>
+    </Drawer>
+  ));
+
+  const handleMaskChange = useCallback((newMaskData) => {
+    setMaskData(newMaskData);
   }, []);
 
-  const handleDrop = useCallback((event) => {
-    event.preventDefault();
-    const file = event.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) {
-      setSelectedImage(file);
-      const reader = new FileReader();
-      reader.onloadend = () => setPreviewUrl(reader.result);
-      reader.readAsDataURL(file);
-    }
-  }, []);
-
-  const handleGenerate = async () => {
+  const handleGenerate = useCallback(async () => {
     if (!selectedImage) return;
 
     setIsLoading(true);
-    setStyledResult(null); // Clear previous result
-
     try {
       // Create form data
       const formData = new FormData();
       formData.append('image', selectedImage);
       formData.append('style', selectedStyle);
       formData.append('quality', modelType);
+      if (maskData) {
+        formData.append('mask', maskData);
+      }
 
       // Make API call
       const response = await fetch('YOUR_API_ENDPOINT', {
@@ -446,113 +870,17 @@ const StyleTransferApp = () => {
       const data = await response.json();
       
       if (data.success) {
-        setStyledResult(data.imageUrl); // Set the styled image URL from API response
+        setStyledResult(data.imageUrl);
       } else {
         throw new Error(data.message || 'Failed to process image');
       }
     } catch (error) {
       console.error('Error generating styled image:', error);
-      // You might want to show an error message to the user
+      // Show error message to user
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const navigationDrawer = (
-    <Box sx={{ width: 240, height: '100%', position: 'relative' }}>
-      <SidebarHeader>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Sparkles size={20} style={{ color: '#8B5CF6' }} />
-          <Typography 
-            variant="h6" 
-            sx={{ 
-              fontWeight: 600, 
-              background: 'linear-gradient(45deg, #8B5CF6, #A78BFA)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              fontSize: '1.1rem',
-            }}
-          >
-            FusionFrame
-          </Typography>
-        </Box>
-        <IconButton 
-          onClick={toggleSidebar} 
-          sx={{ 
-            color: 'text.secondary',
-            padding: 0.5,
-            '&:hover': {
-              color: '#8B5CF6',
-              backgroundColor: 'rgba(139, 92, 246, 0.08)',
-            },
-          }}
-        >
-          <ChevronLeft />
-        </IconButton>
-      </SidebarHeader>
-      
-      <List sx={{ px: 1, py: 1 }}>
-        {menuItems.map((item, index) => (
-          <StyledListItem
-            button
-            key={item.text}
-            selected={index === 0}
-            sx={{
-              mb: 0.25,
-              ...(index === 0 && {
-                background: 'rgba(139, 92, 246, 0.1)',
-                backdropFilter: 'blur(8px)',
-                '& .MuiListItemIcon-root': {
-                  color: '#8B5CF6',
-                },
-                '& .MuiListItemText-primary': {
-                  color: '#8B5CF6',
-                  fontWeight: 600,
-                },
-              }),
-            }}
-          >
-            <ListItemIcon>{item.icon}</ListItemIcon>
-            <ListItemText 
-              primary={item.text}
-              sx={{
-                '& .MuiListItemText-primary': {
-                  fontSize: '0.9rem',
-                },
-              }} 
-            />
-          </StyledListItem>
-        ))}
-      </List>
-      
-      <Box
-        sx={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          p: 1.5,
-          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-          background: 'rgba(31, 41, 55, 0.95)',
-        }}
-      >
-        <StyledListItem 
-          button 
-          sx={{ 
-            color: '#ef4444',
-            '&:hover': {
-              backgroundColor: 'rgba(239, 68, 68, 0.08)',
-            },
-          }}
-        >
-          <ListItemIcon>
-            <LogOut size={20} color="currentColor" />
-          </ListItemIcon>
-          <ListItemText primary="Logout" />
-        </StyledListItem>
-      </Box>
-    </Box>
-  );
+  }, [selectedImage, selectedStyle, modelType, maskData]);
 
   return (
     <ThemeProvider theme={theme}>
@@ -607,26 +935,13 @@ const StyleTransferApp = () => {
           </Toolbar>
         </AppBar>
 
-        {/* Left Navigation */}
-        <Drawer
-          variant={isMobile ? 'temporary' : 'persistent'}
-          open={isMobile ? mobileMenuOpen : isSidebarOpen}
-          onClose={() => setMobileMenuOpen(false)}
-          sx={{
-            flexShrink: 0,
-            '& .MuiDrawer-paper': {
-              width: 240,
-              boxSizing: 'border-box',
-              borderRight: '1px solid rgba(255, 255, 255, 0.08)',
-              transition: 'width 0.3s',
-              background: 'rgba(31, 41, 55, 0.95)',
-              backdropFilter: 'blur(10px)',
-              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
-            },
-          }}
-        >
-          {navigationDrawer}
-        </Drawer>
+        <NavigationDrawer 
+          isOpen={isMobile ? mobileMenuOpen : isSidebarOpen}
+          onClose={handleCloseSidebar}  // Pass the close handler
+          menuItems={menuItems}  // Pass menuItems as prop
+          isMobile={isMobile}  // Pass isMobile as prop
+        />
+
         {/* Main Content */}
         <ContentWrapper isOpen={isSidebarOpen}>
           <StyledContainer maxWidth="lg">
@@ -910,61 +1225,11 @@ const StyleTransferApp = () => {
                     <Typography variant="h6" mb={2}>
                       Preview
                     </Typography>
-                    <ImagePreviewBox>
-                      {isLoading ? (
-                        <Box sx={{ 
-                          display: 'flex', 
-                          flexDirection: 'column', 
-                          alignItems: 'center',
-                          gap: 2
-                        }}>
-                          <CircularProgress 
-                            size={40} 
-                            sx={{ 
-                              color: '#8B5CF6'
-                            }} 
-                          />
-                          <Typography sx={{ 
-                            color: 'rgba(255, 255, 255, 0.7)',
-                            fontSize: { xs: '0.875rem', sm: '1rem' }
-                          }}>
-                            Transforming your image...
-                          </Typography>
-                        </Box>
-                      ) : styledResult ? (
-                        <Box
-                          component="img"
-                          src={styledResult}
-                          alt="Styled Result"
-                          sx={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'contain',
-                            borderRadius: '8px',
-                            transition: 'opacity 0.3s ease',
-                          }}
-                        />
-                      ) : (
-                        <Box sx={{ 
-                          display: 'flex', 
-                          flexDirection: 'column', 
-                          alignItems: 'center',
-                          gap: 2,
-                          color: 'rgba(255, 255, 255, 0.5)'
-                        }}>
-                          <ImageIcon sx={{ 
-                            fontSize: { xs: 40, sm: 48 },
-                            opacity: 0.5
-                          }} />
-                          <Typography sx={{ 
-                            fontSize: { xs: '0.875rem', sm: '1rem' },
-                            textAlign: 'center'
-                          }}>
-                            Click "Generate" to see your styled image
-                          </Typography>
-                        </Box>
-                      )}
-                    </ImagePreviewBox>
+                    <PreviewSection 
+                      previewUrl={previewUrl}
+                      isLoading={isLoading}
+                      onMaskChange={handleMaskChange}
+                    />
                   </Box>
                   {styledResult && (
                     <Box sx={{ 
@@ -1015,4 +1280,5 @@ const StyleTransferApp = () => {
   );
 };
 
-export default StyleTransferApp;
+// 9. Export memoized component
+export default memo(StyleTransferApp);
